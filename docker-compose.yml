@@ -1,0 +1,119 @@
+version: "3.9"
+
+services:
+  # ─── MySQL Database ───────────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: socialflow-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_USER: ${MYSQL_USER:-sfuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-sfpassword}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── Auth / User Service ──────────────────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: socialflow-auth
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@mysql:3306/auth_db
+      JWT_SECRET: ${JWT_SECRET:-supersecretkey_change_in_production}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ─── Post Service ─────────────────────────────────────────────────────────────
+  post-service:
+    build:
+      context: ./post-service
+      dockerfile: Dockerfile
+    container_name: socialflow-post
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@mysql:3306/post_db
+      JWT_SECRET: ${JWT_SECRET:-supersecretkey_change_in_production}
+    volumes:
+      - post_uploads:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ─── Feed Service ─────────────────────────────────────────────────────────────
+  feed-service:
+    build:
+      context: ./feed-service
+      dockerfile: Dockerfile
+    container_name: socialflow-feed
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      AUTH_DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@mysql:3306/auth_db
+      POST_DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@mysql:3306/post_db
+      JWT_SECRET: ${JWT_SECRET:-supersecretkey_change_in_production}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      post-service:
+        condition: service_started
+
+  # ─── Notification Service ─────────────────────────────────────────────────────
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: socialflow-notification
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@mysql:3306/notification_db
+      JWT_SECRET: ${JWT_SECRET:-supersecretkey_change_in_production}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ─── React Frontend ───────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_AUTH_URL: ${VITE_AUTH_URL:-http://localhost:8001}
+        VITE_POST_URL: ${VITE_POST_URL:-http://localhost:8002}
+        VITE_FEED_URL: ${VITE_FEED_URL:-http://localhost:8003}
+        VITE_NOTIF_URL: ${VITE_NOTIF_URL:-http://localhost:8004}
+        VITE_NOTIF_WS_URL: ${VITE_NOTIF_WS_URL:-ws://localhost:8004}
+    container_name: socialflow-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - auth-service
+      - post-service
+      - feed-service
+      - notification-service
+
+volumes:
+  mysql_data:
+  post_uploads:
